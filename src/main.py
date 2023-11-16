@@ -25,7 +25,12 @@ def database_connection() -> sa.Connection:
 
 
 def ingest_data(conn: sa.Connection, timestamp: str, event_type: str):
-    ...
+    conn.execute(
+        sa.text(
+            "INSERT INTO events "
+            f"(time, type) VALUES ('{timestamp}', '{event_type}')"
+        )
+    )
 
 
 def aggregate_events(conn: sa.Connection) -> dict[str, list[tuple[str, str]]]:
