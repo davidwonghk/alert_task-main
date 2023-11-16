@@ -20,10 +20,32 @@ def database_connection(database_url:str, num_trial:int = 5) -> sa.Connection:
                 raise e
             time.sleep(1)
 
+    # events table
     conn.execute(
         sa.text(
             "CREATE TABLE IF NOT EXISTS events "
             "(id SERIAL PRIMARY KEY, time TIMESTAMP WITH TIME ZONE, type VARCHAR)"
+        )
+    )
+    
+    # types table
+    conn.execute(
+        sa.text(
+            "CREATE TABLE IF NOT EXISTS types "
+            "(id SERIAL PRIMARY KEY, type VARCHAR, category VARCHAR);"
+        )
+    )
+    conn.execute(
+        sa.text(
+            """
+            TRUNCATE TABLE types;
+            INSERT INTO types (type, category) VALUES
+                ('pedestrian', 'people'),
+                ('bicycle', 'people'),
+                ('car', 'vehicles'),
+                ('truck', 'vehicles'),
+                ('van', 'vehicles')
+            """
         )
     )
 
@@ -43,17 +65,26 @@ def aggregate_events(conn: sa.Connection) -> dict[str, list[tuple[str, str]]]:
     # the whole aggregation logic is in SQL
     stmt = """
         WITH
+            event_catetoreis AS (
+                SELECT
+                    time,
+                    category
+                FROM 
+                    events,
+                    types
+                WHERE
+                    events.type = types.type
+            ),
             event_intervals AS (
                 SELECT
-                    id,
                     time,
-                    type,
-                    LAG(time) OVER (PARTITION BY type ORDER BY time) AS prev_time
-                FROM events
+                    category,
+                    LAG(time) OVER (PARTITION BY category ORDER BY time) AS prev_time
+                FROM event_catetoreis
             ),
             event_flags AS (
                 SELECT
-                    type,
+                    category,
                     time,
                     CASE WHEN prev_time IS NULL OR time - prev_time > INTERVAL '1 minute'
                         THEN 1
@@ -63,21 +94,21 @@ def aggregate_events(conn: sa.Connection) -> dict[str, list[tuple[str, str]]]:
             ),
             event_partitions AS (
                 SELECT
-                    type,
+                    category,
                     time,
                     new_interval_flag,
-                    ROW_NUMBER() OVER (PARTITION BY type ORDER BY time) AS order_id,
-                    ROW_NUMBER() OVER (PARTITION BY type, new_interval_flag ORDER BY time) AS partition_id
+                    ROW_NUMBER() OVER (PARTITION BY category ORDER BY time) AS order_id,
+                    ROW_NUMBER() OVER (PARTITION BY category, new_interval_flag ORDER BY time) AS partition_id
                 FROM event_flags
             )
         SELECT
-            type,
+            category,
             MIN(time) as start_time,
             MAX(time) as end_time
         FROM
             event_partitions
         GROUP BY
-            type,
+            category,
             CASE WHEN new_interval_flag = 1
                 THEN partition_id
                 ELSE order_id - partition_id
@@ -91,10 +122,10 @@ def aggregate_events(conn: sa.Connection) -> dict[str, list[tuple[str, str]]]:
         batch = output.fetchmany(FETCH_BATCH_SIZE)
         if not batch:
             break
-        for event_type, start_time, end_time in batch:
+        for category, start_time, end_time in batch:
             start = start_time.strftime(DATETIME_FORMAT)
             end = end_time.strftime(DATETIME_FORMAT)
-            res[event_type].append((start, end))
+            res[category].append((start, end))
     return res
 
 
