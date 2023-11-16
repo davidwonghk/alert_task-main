@@ -7,12 +7,15 @@ from itertools import zip_longest
 from typing import Iterable
 
 
+# constants definationin
+# in proudction these should be read from config
 DATABASE_URL = "postgresql://postgres:postgres@postgres:5432/postgres"
 DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
 INSERT_BATCH_SIZE = 100
 FETCH_BATCH_SIZE = 1000
 CONSECUTIVE_EVENTS = 5
 
+# type definationin
 Event = tuple[str, str]
 
 
@@ -44,6 +47,7 @@ class PersonAlerter:
             self._count = 0
 
 
+# main logic functions
 def database_connection(database_url:str, num_trial:int = 5) -> sa.Connection:
     engine = sa.create_engine(database_url)
 
@@ -94,10 +98,35 @@ def ingest_data(conn: sa.Connection, events: list[Event]):
 
 
 def aggregate_events(conn: sa.Connection) -> dict[str, list[Event]]:
-    # the whole aggregation logic is in SQL
+    """
+    as per requested the whole aggregation logic is in SQL
+    the algorithm read the whole "events" table at first
+    and process them as a pipeline of multiple temporary views:
+        1. event_categories: map type to category by "types" table
+        2. event_intervals: add the previous timestamp(prev_time) from the previous event of the same category
+        3. event_flags: add a new_interval_flag to indicate if the current row should start a new interval
+           (ie. >1 min from the previous event of the same category)
+        4. event_partitions: add two sequence ids
+            - order_id = sequence id for events of the same category order by timestamp
+            - partition_id = sequence id for events of the same category and same new_interval_flag, order by timestamp
+        5. the desired result: group by category and calculated group_id, base on
+            if new_interval_flag is 1, a new group_id is assigned,
+                ie. group_id = partition_id
+            otherwise, since the difference of the order_id and partition_id is equals to the number of assigned groups,
+                ie. group_id = order_id - partition_id
+
+          eg. for the timestamps of the same category
+            time       prev_time  new_interval_flag  order_id  partition_id  group_id
+            18:30:30   none       1                  1         1             1
+            18:31:00   18:30:30   0                  2         1             1
+            18:31:30   18:31:30   0                  3         2             1
+            18:35:00   18:35:00   1                  4         2             2
+            18:35:30   18:35:30   0                  5         3             2
+    """
+
     stmt = """
         WITH
-            event_catetoreis AS (
+            event_categoreis AS (
                 SELECT
                     time,
                     category
@@ -112,7 +141,7 @@ def aggregate_events(conn: sa.Connection) -> dict[str, list[Event]]:
                     time,
                     category,
                     LAG(time) OVER (PARTITION BY category ORDER BY time) AS prev_time
-                FROM event_catetoreis
+                FROM event_categoreis
             ),
             event_flags AS (
                 SELECT
