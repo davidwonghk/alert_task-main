@@ -4,20 +4,24 @@ import sqlalchemy as sa
 
 from collections import defaultdict
 from itertools import zip_longest
-from typing import Iterable
+from typing import Callable, Iterable, Optional
 
 
+# --------------------------------------------------
 # constants definationin
 # in proudction these should be read from config
 DATABASE_URL = "postgresql://postgres:postgres@postgres:5432/postgres"
 DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
 INSERT_BATCH_SIZE = 100
 FETCH_BATCH_SIZE = 1000
-CONSECUTIVE_EVENTS = 5
+CONSECUTIVE_EVENTS_TO_ALERT = 5
 
+# --------------------------------------------------
 # type definationin
 Event = tuple[str, str]
+Alerter = Callable[[Event], Optional[str]]
 
+# --------------------------------------------------
 
 def batch(iterable: Iterable, batch_size: int) -> Iterable:
     args = [iter(iterable)] * batch_size
@@ -25,29 +29,30 @@ def batch(iterable: Iterable, batch_size: int) -> Iterable:
         yield [a for a in abatch if a is not None]
     
 
-def fire_alert(person: str, count: int) -> None:
-    print(f"person '{person}' is detected in {count} consecutive events")
+def build_consecutive_alter(alert_types: list[str], alert_count: int) -> Alerter:
+    """
+    assuming all the event.type of people cateogory
+    is refering to the same person
+    """
+    count = 0
+    last = None
+    def alerter(event: Event) -> Optional[str]:
+        nonlocal count, last
+        _, event_type = event
+        if event_type not in alert_types:
+            return None
+
+        count = count*int(event_type == last) + 1
+        last = event_type
+
+        if count == alert_count:
+            count = 0
+            return f"person '{event_type}' is detected in {alert_count} consecutive events"
+        return None
+        
+    return alerter
 
 
-class PersonAlerter:
-    def __init__(self, conn: sa.Connection, alert_count: int):
-        self._last = None
-        self._count = 0
-        self._alert_count = alert_count
-
-    def detect(self, event_type: str):
-        if event_type == self._last:
-            self._count += 1
-        else:
-            self._count = 1
-        self._last = event_type
-
-        if self._count == self._alert_count:
-            fire_alert(event_type, self._count)
-            self._count = 0
-
-
-# main logic functions
 def database_connection(database_url:str, num_trial:int = 5) -> sa.Connection:
     engine = sa.create_engine(database_url)
 
@@ -91,10 +96,15 @@ def database_connection(database_url:str, num_trial:int = 5) -> sa.Connection:
     return conn
 
 
-def ingest_data(conn: sa.Connection, events: list[Event]):
+def ingest_data(conn: sa.Connection, events: Iterable[Event], alerters: Iterable[Alerter]):
     stmt = "INSERT INTO events (time, type) VALUES "
     stmt += ",".join(f"('{timestamp}', '{event_type}')" for timestamp, event_type in events)
     conn.execute(sa.text(stmt))
+    for event in events:
+        for alerter in alerters:
+            alert_msg = alerter(event)
+            if alert_msg:
+                print(alert_msg)
 
 
 def aggregate_events(conn: sa.Connection) -> dict[str, list[Event]]:
@@ -206,9 +216,11 @@ def main():
         ("2023-08-10T18:37:30", "pedestrian"),
     ]
 
-    #alerter = PersonAlerter(conn, CONSECUTIVE_EVENTS)
+    alerters = [
+            build_consecutive_alter(['pedestrian', 'bicycle'], CONSECUTIVE_EVENTS_TO_ALERT)
+    ]
     for event_batch in batch(events, INSERT_BATCH_SIZE):
-        ingest_data(conn, event_batch)
+        ingest_data(conn, event_batch, alerters)
 
     aggregate_results = aggregate_events(conn)
     print(aggregate_results)
