@@ -1,6 +1,11 @@
 import time
 
 import sqlalchemy as sa
+from collections import defaultdict
+
+
+DATABASE_URL = "postgresql://postgres:postgres@postgres:5432/postgres"
+DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
 
 def database_connection(database_url:str, num_trial:int = 5) -> sa.Connection:
@@ -34,20 +39,62 @@ def ingest_data(conn: sa.Connection, timestamp: str, event_type: str):
 
 
 def aggregate_events(conn: sa.Connection) -> dict[str, list[tuple[str, str]]]:
-    return {
-        "people": [
-            ("2023-08-10T10:00:00", "2023-08-10T10:02:00"),
-            ("2023-08-10T10:04:00", "2023-08-10T10:05:00"),
-        ],
-        "vehicles": [
-            ("2023-08-10T10:00:00", "2023-08-10T10:02:00"),
-            ("2023-08-10T10:05:00", "2023-08-10T10:07:00"),
-        ],
-    }
+    # the whole aggregation logic is in SQL
+    stmt = """
+        WITH
+            event_intervals AS (
+                SELECT
+                    id,
+                    time,
+                    type,
+                    LAG(time) OVER (PARTITION BY type ORDER BY time) AS prev_time
+                FROM events
+            ),
+            event_flags AS (
+                SELECT
+                    type,
+                    time,
+                    CASE WHEN prev_time IS NULL OR time - prev_time > INTERVAL '1 minute'
+                        THEN 1
+                        ELSE 0
+                    END AS new_interval_flag
+                FROM event_intervals
+            ),
+            event_partitions AS (
+                SELECT
+                    type,
+                    time,
+                    new_interval_flag,
+                    ROW_NUMBER() OVER (PARTITION BY type ORDER BY time) AS order_id,
+                    ROW_NUMBER() OVER (PARTITION BY type, new_interval_flag ORDER BY time) AS partition_id
+                FROM event_flags
+            )
+        SELECT
+            type,
+            MIN(time) as start_time,
+            MAX(time) as end_time
+        FROM
+            event_partitions
+        GROUP BY
+            type,
+            CASE WHEN new_interval_flag = 1
+                THEN partition_id
+                ELSE order_id - partition_id
+            END
+        ORDER BY
+            start_time
+    """
+    res = defaultdict(list)
+    output = conn.execute(sa.text(stmt))
+    for event_type, start_time, end_time in output.fetchall():
+        start = start_time.strftime(DATETIME_FORMAT)
+        end = end_time.strftime(DATETIME_FORMAT)
+        res[event_type].append((start, end))
+    return res
 
 
 def main():
-    conn = database_connection("postgresql://postgres:postgres@postgres:5432/postgres")
+    conn = database_connection(DATABASE_URL)
 
     # Simulate real-time events every 30 seconds
     events = [
