@@ -3,14 +3,14 @@ import time
 import sqlalchemy as sa
 
 
-def database_connection() -> sa.Connection:
-    engine = sa.create_engine("postgresql://postgres:postgres@postgres:5432/postgres")
+def database_connection(database_url:str, num_trial:int = 5) -> sa.Connection:
+    engine = sa.create_engine(database_url)
 
-    for attempt in range(5):
+    for attempt in range(num_trial):
         try:
             conn = engine.connect()
         except sa.exc.OperationalError as e:
-            if attempt == 4:
+            if attempt == num_trial - 1:
                 raise e
             time.sleep(1)
 
@@ -47,7 +47,7 @@ def aggregate_events(conn: sa.Connection) -> dict[str, list[tuple[str, str]]]:
 
 
 def main():
-    conn = database_connection()
+    conn = database_connection("postgresql://postgres:postgres@postgres:5432/postgres")
 
     # Simulate real-time events every 30 seconds
     events = [
