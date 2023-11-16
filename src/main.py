@@ -39,15 +39,14 @@ def build_consecutive_alter(alert_types: list[str], alert_count: int) -> Alerter
     def alerter(event: Event) -> Optional[str]:
         nonlocal count, last
         _, event_type = event
-        if event_type not in alert_types:
-            return None
 
         count = count*int(event_type == last) + 1
         last = event_type
 
         if count == alert_count:
             count = 0
-            return f"person '{event_type}' is detected in {alert_count} consecutive events"
+            if event_type in alert_types:
+                return f"person '{event_type}' is detected in {alert_count} consecutive events"
         return None
         
     return alerter
