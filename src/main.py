@@ -6,6 +6,7 @@ from collections import defaultdict
 
 DATABASE_URL = "postgresql://postgres:postgres@postgres:5432/postgres"
 DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
+FETCH_BATCH_SIZE = 1000
 
 
 def database_connection(database_url:str, num_trial:int = 5) -> sa.Connection:
@@ -86,10 +87,14 @@ def aggregate_events(conn: sa.Connection) -> dict[str, list[tuple[str, str]]]:
     """
     res = defaultdict(list)
     output = conn.execute(sa.text(stmt))
-    for event_type, start_time, end_time in output.fetchall():
-        start = start_time.strftime(DATETIME_FORMAT)
-        end = end_time.strftime(DATETIME_FORMAT)
-        res[event_type].append((start, end))
+    while True:
+        batch = output.fetchmany(FETCH_BATCH_SIZE)
+        if not batch:
+            break
+        for event_type, start_time, end_time in batch:
+            start = start_time.strftime(DATETIME_FORMAT)
+            end = end_time.strftime(DATETIME_FORMAT)
+            res[event_type].append((start, end))
     return res
 
 
