@@ -1,14 +1,26 @@
 import time
 
 import sqlalchemy as sa
+
 from collections import defaultdict
+from itertools import zip_longest
+from typing import Iterable
 
 
 DATABASE_URL = "postgresql://postgres:postgres@postgres:5432/postgres"
 DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
+INSERT_BATCH_SIZE = 100
 FETCH_BATCH_SIZE = 1000
 CONSECUTIVE_EVENTS = 5
 
+Event = tuple[str, str]
+
+
+def batch(iterable: Iterable, batch_size: int) -> Iterable:
+    args = [iter(iterable)] * batch_size
+    for abatch in zip_longest(*args):
+        yield [a for a in abatch if a is not None]
+    
 
 def fire_alert(person: str, count: int) -> None:
     print(f"person '{person}' is detected in {count} consecutive events")
@@ -75,17 +87,13 @@ def database_connection(database_url:str, num_trial:int = 5) -> sa.Connection:
     return conn
 
 
-def ingest_data(conn: sa.Connection, timestamp: str, event_type: str, alerter: PersonAlerter):
-    conn.execute(
-        sa.text(
-            "INSERT INTO events "
-            f"(time, type) VALUES ('{timestamp}', '{event_type}')"
-        )
-    )
-    alerter.detect(event_type)
+def ingest_data(conn: sa.Connection, events: list[Event]):
+    stmt = "INSERT INTO events (time, type) VALUES "
+    stmt += ",".join(f"('{timestamp}', '{event_type}')" for timestamp, event_type in events)
+    conn.execute(sa.text(stmt))
 
 
-def aggregate_events(conn: sa.Connection) -> dict[str, list[tuple[str, str]]]:
+def aggregate_events(conn: sa.Connection) -> dict[str, list[Event]]:
     # the whole aggregation logic is in SQL
     stmt = """
         WITH
@@ -143,10 +151,10 @@ def aggregate_events(conn: sa.Connection) -> dict[str, list[tuple[str, str]]]:
     res = defaultdict(list)
     output = conn.execute(sa.text(stmt))
     while True:
-        batch = output.fetchmany(FETCH_BATCH_SIZE)
-        if not batch:
+        aggregate_batch = output.fetchmany(FETCH_BATCH_SIZE)
+        if not aggregate_batch:
             break
-        for category, start_time, end_time in batch:
+        for category, start_time, end_time in aggregate_batch:
             start = start_time.strftime(DATETIME_FORMAT)
             end = end_time.strftime(DATETIME_FORMAT)
             res[category].append((start, end))
@@ -169,9 +177,9 @@ def main():
         ("2023-08-10T18:37:30", "pedestrian"),
     ]
 
-    alerter = PersonAlerter(conn, CONSECUTIVE_EVENTS)
-    for timestamp, event_type in events:
-        ingest_data(conn, timestamp, event_type, alerter)
+    #alerter = PersonAlerter(conn, CONSECUTIVE_EVENTS)
+    for event_batch in batch(events, INSERT_BATCH_SIZE):
+        ingest_data(conn, event_batch)
 
     aggregate_results = aggregate_events(conn)
     print(aggregate_results)
