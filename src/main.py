@@ -7,6 +7,29 @@ from collections import defaultdict
 DATABASE_URL = "postgresql://postgres:postgres@postgres:5432/postgres"
 DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
 FETCH_BATCH_SIZE = 1000
+CONSECUTIVE_EVENTS = 5
+
+
+def fire_alert(person: str, count: int) -> None:
+    print(f"person '{person}' is detected in {count} consecutive events")
+
+
+class PersonAlerter:
+    def __init__(self, conn: sa.Connection, alert_count: int):
+        self._last = None
+        self._count = 0
+        self._alert_count = alert_count
+
+    def detect(self, event_type: str):
+        if event_type == self._last:
+            self._count += 1
+        else:
+            self._count = 1
+        self._last = event_type
+
+        if self._count == self._alert_count:
+            fire_alert(event_type, self._count)
+            self._count = 0
 
 
 def database_connection(database_url:str, num_trial:int = 5) -> sa.Connection:
@@ -52,13 +75,14 @@ def database_connection(database_url:str, num_trial:int = 5) -> sa.Connection:
     return conn
 
 
-def ingest_data(conn: sa.Connection, timestamp: str, event_type: str):
+def ingest_data(conn: sa.Connection, timestamp: str, event_type: str, alerter: PersonAlerter):
     conn.execute(
         sa.text(
             "INSERT INTO events "
             f"(time, type) VALUES ('{timestamp}', '{event_type}')"
         )
     )
+    alerter.detect(event_type)
 
 
 def aggregate_events(conn: sa.Connection) -> dict[str, list[tuple[str, str]]]:
@@ -145,8 +169,9 @@ def main():
         ("2023-08-10T18:37:30", "pedestrian"),
     ]
 
+    alerter = PersonAlerter(conn, CONSECUTIVE_EVENTS)
     for timestamp, event_type in events:
-        ingest_data(conn, timestamp, event_type)
+        ingest_data(conn, timestamp, event_type, alerter)
 
     aggregate_results = aggregate_events(conn)
     print(aggregate_results)
